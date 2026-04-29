@@ -17,7 +17,12 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 
 // ============================================================
-// استقبال ZIP وبناء APK
+// تخزين مؤقت لحالة البناء
+// ============================================================
+const builds = {};
+
+// ============================================================
+// استقبال ZIP وبدء البناء
 // ============================================================
 app.post('/build', upload.single('file'), async (req, res) => {
     try {
@@ -27,23 +32,80 @@ app.post('/build', upload.single('file'), async (req, res) => {
             return res.status(400).json({ status: 'error', message: 'لم يتم إرسال ملف' });
         }
 
-        console.log('=============================');
-        console.log('بدء عملية بناء جديدة');
-        console.log('=============================');
+        // إنشاء build_id فريد
+        const buildId = Date.now().toString();
+        
+        // حفظ حالة البناء
+        builds[buildId] = {
+            status: 'uploading',
+            downloadUrl: null,
+            error: null,
+            started: new Date()
+        };
+
+        // الرد فوراً بـ build_id
+        res.json({ status: 'building', build_id: buildId });
+
+        // متابعة البناء في الخلفية
+        processBuild(buildId, zipFile);
+
+    } catch (error) {
+        console.error('Error:', error.message);
+        res.status(500).json({ status: 'error', message: error.message });
+    }
+});
+
+// ============================================================
+// التحقق من حالة البناء
+// ============================================================
+app.get('/status/:buildId', (req, res) => {
+    const buildId = req.params.buildId;
+    const build = builds[buildId];
+    
+    if (!build) {
+        return res.json({ status: 'error', message: 'رقم البناء غير موجود' });
+    }
+    
+    res.json({
+        status: build.status,
+        download_url: build.downloadUrl,
+        error: build.error
+    });
+    
+    // تنظيف البناءات القديمة (أكثر من 30 دقيقة)
+    if (build.status === 'success' || build.status === 'error') {
+        const thirtyMinAgo = Date.now() - 30 * 60 * 1000;
+        for (const id in builds) {
+            if (builds[id].started.getTime() < thirtyMinAgo) {
+                delete builds[id];
+            }
+        }
+    }
+});
+
+// ============================================================
+// تنفيذ البناء في الخلفية
+// ============================================================
+async function processBuild(buildId, zipFile) {
+    try {
+        builds[buildId].status = 'extracting';
+        console.log(`[${buildId}] بدء عملية البناء`);
 
         // 1. فك ضغط ZIP
-        console.log('فك ضغط الملف...');
+        console.log(`[${buildId}] فك ضغط الملف...`);
         const zip = new AdmZip(zipFile.path);
-        const projectDir = path.join(__dirname, 'temp', Date.now().toString());
+        const projectDir = path.join(__dirname, 'temp', buildId);
         zip.extractAllTo(projectDir, true);
 
         // 2. رفع الملفات إلى GitHub
-        console.log('رفع الملفات إلى GitHub...');
+        builds[buildId].status = 'uploading_to_github';
+        console.log(`[${buildId}] رفع الملفات إلى GitHub...`);
         await uploadToGitHub(projectDir);
-        console.log('تم رفع الملفات بنجاح');
+        console.log(`[${buildId}] تم رفع الملفات بنجاح`);
 
         // 3. انتظار البناء
-        console.log('انتظار GitHub Actions...');
+        builds[buildId].status = 'building';
+        console.log(`[${buildId}] انتظار GitHub Actions...`);
         const downloadUrl = await waitForBuild();
 
         // 4. تنظيف
@@ -51,18 +113,25 @@ app.post('/build', upload.single('file'), async (req, res) => {
         fs.rmSync(projectDir, { recursive: true, force: true });
 
         if (downloadUrl) {
-            console.log('تم البناء بنجاح!');
-            res.json({ status: 'success', download_url: downloadUrl });
+            builds[buildId].status = 'success';
+            builds[buildId].downloadUrl = downloadUrl;
+            console.log(`[${buildId}] تم البناء بنجاح!`);
         } else {
-            console.log('فشل البناء');
-            res.json({ status: 'error', message: 'فشل البناء على GitHub Actions' });
+            builds[buildId].status = 'error';
+            builds[buildId].error = 'فشل البناء على GitHub Actions';
+            console.log(`[${buildId}] فشل البناء`);
         }
 
     } catch (error) {
-        console.error('Error:', error.message);
-        res.status(500).json({ status: 'error', message: error.message });
+        console.error(`[${buildId}] Error:`, error.message);
+        builds[buildId].status = 'error';
+        builds[buildId].error = error.message;
+        
+        try {
+            fs.rmSync(zipFile.path);
+        } catch (e) {}
     }
-});
+}
 
 // ============================================================
 // دالة رفع الملفات إلى GitHub
@@ -135,7 +204,7 @@ async function createTreeItems(dirPath, basePath, treeItems, headers, apiBase) {
 }
 
 // ============================================================
-// انتظار بناء GitHub Actions (مع تجاهل runs القديمة)
+// انتظار بناء GitHub Actions
 // ============================================================
 async function waitForBuild() {
     const apiBase = `https://api.github.com/repos/${GITHUB_USERNAME}/${GITHUB_REPO}`;
@@ -145,7 +214,6 @@ async function waitForBuild() {
         'User-Agent': 'FlutterIDE-Server'
     };
 
-    // حفظ آخر run موجود قبل البناء الجديد
     const initialRuns = await axios.get(`${apiBase}/actions/runs?branch=${GITHUB_BRANCH}&per_page=1`, { headers });
     const lastRunBefore = initialRuns.data.workflow_runs[0]?.id || 0;
     
@@ -162,7 +230,6 @@ async function waitForBuild() {
         const runsRes = await axios.get(`${apiBase}/actions/runs?branch=${GITHUB_BRANCH}&per_page=5`, { headers });
         
         for (const run of runsRes.data.workflow_runs) {
-            // تجاهل runs القديمة التي كانت موجودة قبل البناء
             if (run.id <= lastRunBefore && run.status === 'completed') {
                 continue;
             }
@@ -189,7 +256,7 @@ async function waitForBuild() {
 }
 
 // ============================================================
-// صفحة رئيسية للتأكد من عمل الخادم
+// صفحة رئيسية
 // ============================================================
 app.get('/', (req, res) => {
     res.json({ status: 'ok', message: 'FlutterIDE Server is running' });
