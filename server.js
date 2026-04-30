@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 
 const app = express();
+app.use(express.json());
 const upload = multer({ dest: 'uploads/' });
 
 // ============================================================
@@ -20,6 +21,7 @@ const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 // تخزين مؤقت لحالة البناء
 // ============================================================
 const builds = {};
+const pubgets = {};
 
 // ============================================================
 // استقبال ZIP وبدء البناء
@@ -53,6 +55,36 @@ app.post('/build', upload.single('file'), async (req, res) => {
 });
 
 // ============================================================
+// استقبال طلب تنزيل المكتبات (pub get)
+// ============================================================
+app.post('/pubget', upload.single('file'), async (req, res) => {
+    try {
+        const zipFile = req.file;
+        
+        if (!zipFile) {
+            return res.status(400).json({ status: 'error', message: 'لم يتم إرسال ملف' });
+        }
+
+        const pubgetId = Date.now().toString();
+        
+        pubgets[pubgetId] = {
+            status: 'uploading',
+            error: null,
+            logs: '',
+            started: new Date()
+        };
+
+        res.json({ status: 'started', pubget_id: pubgetId });
+
+        processPubGet(pubgetId, zipFile);
+
+    } catch (error) {
+        console.error('Error:', error.message);
+        res.status(500).json({ status: 'error', message: error.message });
+    }
+});
+
+// ============================================================
 // التحقق من حالة البناء
 // ============================================================
 app.get('/status/:buildId', (req, res) => {
@@ -75,6 +107,33 @@ app.get('/status/:buildId', (req, res) => {
         for (const id in builds) {
             if (builds[id].started.getTime() < thirtyMinAgo) {
                 delete builds[id];
+            }
+        }
+    }
+});
+
+// ============================================================
+// التحقق من حالة pub get
+// ============================================================
+app.get('/pubget-status/:pubgetId', (req, res) => {
+    const pubgetId = req.params.pubgetId;
+    const pubget = pubgets[pubgetId];
+    
+    if (!pubget) {
+        return res.json({ status: 'error', message: 'رقم العملية غير موجود' });
+    }
+    
+    res.json({
+        status: pubget.status,
+        error: pubget.error,
+        logs: pubget.logs || ''
+    });
+    
+    if (pubget.status === 'success' || pubget.status === 'error') {
+        const thirtyMinAgo = Date.now() - 30 * 60 * 1000;
+        for (const id in pubgets) {
+            if (pubgets[id].started.getTime() < thirtyMinAgo) {
+                delete pubgets[id];
             }
         }
     }
@@ -139,6 +198,62 @@ async function processBuild(buildId, zipFile) {
 }
 
 // ============================================================
+// تنفيذ flutter pub get في الخلفية
+// ============================================================
+async function processPubGet(pubgetId, zipFile) {
+    try {
+        pubgets[pubgetId].status = 'extracting';
+        pubgets[pubgetId].logs += '📦 بدء تنزيل المكتبات\n';
+        console.log(`[${pubgetId}] بدء تنزيل المكتبات`);
+
+        pubgets[pubgetId].logs += '📂 فك ضغط المشروع...\n';
+        console.log(`[${pubgetId}] فك ضغط الملف...`);
+        const zip = new AdmZip(zipFile.path);
+        const projectDir = path.join(__dirname, 'temp_pubget', pubgetId);
+        zip.extractAllTo(projectDir, true);
+        pubgets[pubgetId].logs += '✓ تم فك ضغط المشروع\n';
+
+        pubgets[pubgetId].status = 'uploading_to_github';
+        pubgets[pubgetId].logs += '📤 رفع الملفات إلى GitHub...\n';
+        console.log(`[${pubgetId}] رفع الملفات إلى GitHub...`);
+        await uploadToGitHub(projectDir, pubgetId);
+        pubgets[pubgetId].logs += '✓ تم رفع الملفات بنجاح\n';
+        console.log(`[${pubgetId}] تم رفع الملفات بنجاح`);
+
+        pubgets[pubgetId].status = 'pubgetting';
+        pubgets[pubgetId].logs += '⏳ انتظار اكتمال تنزيل المكتبات من GitHub Actions...\n';
+        console.log(`[${pubgetId}] انتظار تنزيل المكتبات...`);
+        const result = await waitForPubGet(pubgetId);
+
+        try {
+            fs.rmSync(zipFile.path);
+            fs.rmSync(projectDir, { recursive: true, force: true });
+        } catch (e) {}
+
+        if (result.success) {
+            pubgets[pubgetId].status = 'success';
+            pubgets[pubgetId].logs += '✅ تم تنزيل المكتبات بنجاح!\n';
+            console.log(`[${pubgetId}] تم تنزيل المكتبات بنجاح!`);
+        } else {
+            pubgets[pubgetId].status = 'error';
+            pubgets[pubgetId].error = result.error;
+            pubgets[pubgetId].logs += result.logs || '❌ فشل تنزيل المكتبات\n';
+            console.log(`[${pubgetId}] فشل تنزيل المكتبات`);
+        }
+
+    } catch (error) {
+        console.error(`[${pubgetId}] Error:`, error.message);
+        pubgets[pubgetId].status = 'error';
+        pubgets[pubgetId].error = error.message;
+        pubgets[pubgetId].logs += `❌ خطأ: ${error.message}\n`;
+        
+        try {
+            fs.rmSync(zipFile.path);
+        } catch (e) {}
+    }
+}
+
+// ============================================================
 // دالة رفع الملفات إلى GitHub
 // ============================================================
 async function uploadToGitHub(projectDir, buildId) {
@@ -149,7 +264,6 @@ async function uploadToGitHub(projectDir, buildId) {
         'User-Agent': 'FlutterIDE-Server'
     };
 
-    builds[buildId].logs += '📡 جلب آخر commit من GitHub...\n';
     const branchRes = await axios.get(`${apiBase}/branches/${GITHUB_BRANCH}`, { headers });
     const latestSha = branchRes.data.commit.sha;
     const treeSha = branchRes.data.commit.commit.tree.sha;
@@ -157,20 +271,17 @@ async function uploadToGitHub(projectDir, buildId) {
     const treeItems = [];
     await createTreeItems(projectDir, '', treeItems, headers, apiBase, buildId);
 
-    builds[buildId].logs += '🌳 إنشاء شجرة الملفات...\n';
     const treeRes = await axios.post(`${apiBase}/git/trees`, {
         tree: treeItems,
         base_tree: treeSha
     }, { headers });
 
-    builds[buildId].logs += '💾 إنشاء commit جديد...\n';
     const commitRes = await axios.post(`${apiBase}/git/commits`, {
         message: `Build from FlutterIDE - ${new Date().toISOString()}`,
         tree: treeRes.data.sha,
         parents: [latestSha]
     }, { headers });
 
-    builds[buildId].logs += '🚀 دفع التغييرات إلى GitHub...\n';
     await axios.patch(`${apiBase}/git/refs/heads/${GITHUB_BRANCH}`, {
         sha: commitRes.data.sha
     }, { headers });
@@ -207,7 +318,7 @@ async function createTreeItems(dirPath, basePath, treeItems, headers, apiBase, b
 }
 
 // ============================================================
-// انتظار بناء GitHub Actions مع جلب السجلات التفصيلية
+// انتظار بناء GitHub Actions
 // ============================================================
 async function waitForBuild(buildId) {
     const apiBase = `https://api.github.com/repos/${GITHUB_USERNAME}/${GITHUB_REPO}`;
@@ -221,7 +332,6 @@ async function waitForBuild(buildId) {
     const lastRunBefore = initialRuns.data.workflow_runs[0]?.id || 0;
     
     builds[buildId].logs += `🔍 آخر run موجود قبل البناء: ${lastRunBefore}\n`;
-    console.log(`[${buildId}] آخر run موجود قبل البناء: ${lastRunBefore}`);
 
     for (let i = 0; i < 150; i++) {
         await new Promise(resolve => setTimeout(resolve, 5000));
@@ -229,7 +339,6 @@ async function waitForBuild(buildId) {
         const elapsed = (i + 1) * 5;
         if (elapsed % 30 === 0) {
             builds[buildId].logs += `⏳ انتظار البناء... (${elapsed} ثانية)\n`;
-            console.log(`[${buildId}] انتظار البناء... (${elapsed} ثانية)`);
         }
 
         const runsRes = await axios.get(`${apiBase}/actions/runs?branch=${GITHUB_BRANCH}&per_page=5`, { headers });
@@ -240,13 +349,10 @@ async function waitForBuild(buildId) {
             }
             
             builds[buildId].logs += `📊 Run #${run.id}: ${run.status} (${run.conclusion || 'pending'})\n`;
-            console.log(`[${buildId}] Run #${run.id}: ${run.status} (${run.conclusion || 'pending'})`);
             
             if (run.status === 'completed') {
                 if (run.conclusion === 'success') {
                     builds[buildId].logs += `✅ اكتمل البناء بنجاح!\n`;
-                    console.log(`[${buildId}] اكتمل البناء بنجاح!`);
-                    
                     const releasesRes = await axios.get(`${apiBase}/releases?per_page=1`, { headers });
                     if (releasesRes.data.length > 0 && releasesRes.data[0].assets.length > 0) {
                         const downloadUrl = releasesRes.data[0].assets[0].browser_download_url;
@@ -255,12 +361,9 @@ async function waitForBuild(buildId) {
                     return { success: false, error: 'لم يتم العثور على ملف APK', logs: builds[buildId].logs };
                 } else {
                     builds[buildId].logs += `❌ فشل البناء (${run.conclusion})\n`;
-                    console.log(`[${buildId}] فشل البناء (${run.conclusion})`);
-                    
                     builds[buildId].logs += `📥 جلب سجلات البناء التفصيلية من GitHub...\n`;
                     
                     try {
-                        // جلب السجلات المضغوطة من GitHub Actions
                         const logsUrl = `${apiBase}/actions/runs/${run.id}/logs`;
                         const logsRes = await axios.get(logsUrl, { 
                             headers, 
@@ -268,7 +371,6 @@ async function waitForBuild(buildId) {
                         });
                         
                         if (logsRes.data && logsRes.data.length > 0) {
-                            // فك ضغط السجلات باستخدام adm-zip
                             const zip = new AdmZip(Buffer.from(logsRes.data));
                             const zipEntries = zip.getEntries();
                             let allLogs = '';
@@ -279,25 +381,14 @@ async function waitForBuild(buildId) {
                                 }
                             }
                             
-                            builds[buildId].logs += `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
-                            builds[buildId].logs += `📄 سجلات البناء التفصيلية (Flutter/Gradle):\n`;
-                            builds[buildId].logs += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
-                            
-                            // البحث عن الأسطر التي تحتوي على أخطاء (غير حساس لحالة الأحرف)
                             const logLines = allLogs.split('\n');
                             const errorKeywords = [
                                 'error:', 'Error:', 'ERROR:',
                                 'FAILURE:', 'FAILED:',
                                 'Exception:', 'exception:',
                                 'Could not find',
-                                'undefined',
                                 'syntax error',
-                                'Build failed',
-                                'gradle failed',
-                                'flutter build failed',
-                                'missing',
-                                'not found',
-                                'failed to'
+                                'Build failed'
                             ];
                             
                             const relevantLines = [];
@@ -312,43 +403,75 @@ async function waitForBuild(buildId) {
                             
                             if (relevantLines.length > 0) {
                                 builds[buildId].logs += `\n⚠️ الأخطاء المكتشفة:\n`;
-                                for (const line of relevantLines.slice(-50)) {
+                                for (const line of relevantLines.slice(-30)) {
                                     builds[buildId].logs += `  ❌ ${line}\n`;
                                 }
                             }
                             
-                            builds[buildId].logs += `\n📋 آخر 150 سطر من سجلات البناء:\n`;
-                            const lastLines = logLines.slice(-150);
+                            builds[buildId].logs += `\n📋 آخر 100 سطر من سجلات البناء:\n`;
+                            const lastLines = logLines.slice(-100);
                             for (const line of lastLines) {
                                 if (line.trim().length > 0) {
                                     builds[buildId].logs += `${line}\n`;
                                 }
                             }
-                            builds[buildId].logs += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
-                        } else {
-                            builds[buildId].logs += `⚠️ لا توجد سجلات تفصيلية متاحة\n`;
                         }
-                        
                     } catch (logErr) {
-                        builds[buildId].logs += `⚠️ فشل في جلب السجلات التفصيلية: ${logErr.message}\n`;
+                        builds[buildId].logs += `⚠️ فشل في جلب السجلات التفصيلية\n`;
                     }
                     
-                    return { 
-                        success: false, 
-                        error: `فشل البناء: ${run.conclusion}`, 
-                        logs: builds[buildId].logs 
-                    };
+                    return { success: false, error: `فشل البناء: ${run.conclusion}`, logs: builds[buildId].logs };
                 }
             }
         }
     }
     
     builds[buildId].logs += `⏰ انتهت مهلة الانتظار (12.5 دقيقة)\n`;
-    return { 
-        success: false, 
-        error: 'انتهت مهلة الانتظار', 
-        logs: builds[buildId].logs 
+    return { success: false, error: 'انتهت مهلة الانتظار', logs: builds[buildId].logs };
+}
+
+// ============================================================
+// انتظار تنزيل المكتبات من GitHub Actions
+// ============================================================
+async function waitForPubGet(pubgetId) {
+    const apiBase = `https://api.github.com/repos/${GITHUB_USERNAME}/${GITHUB_REPO}`;
+    const headers = {
+        'Authorization': `token ${GITHUB_TOKEN}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'FlutterIDE-Server'
     };
+
+    const initialRuns = await axios.get(`${apiBase}/actions/runs?branch=${GITHUB_BRANCH}&per_page=1`, { headers });
+    const lastRunBefore = initialRuns.data.workflow_runs[0]?.id || 0;
+    
+    pubgets[pubgetId].logs += `🔍 آخر run موجود قبل العملية: ${lastRunBefore}\n`;
+
+    for (let i = 0; i < 60; i++) {
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        
+        const runsRes = await axios.get(`${apiBase}/actions/runs?branch=${GITHUB_BRANCH}&per_page=5`, { headers });
+        
+        for (const run of runsRes.data.workflow_runs) {
+            if (run.id <= lastRunBefore && run.status === 'completed') {
+                continue;
+            }
+            
+            pubgets[pubgetId].logs += `📊 Run #${run.id}: ${run.status}\n`;
+            
+            if (run.status === 'completed') {
+                if (run.conclusion === 'success') {
+                    pubgets[pubgetId].logs += `✅ اكتمل تنزيل المكتبات بنجاح!\n`;
+                    return { success: true };
+                } else {
+                    pubgets[pubgetId].logs += `❌ فشل تنزيل المكتبات (${run.conclusion})\n`;
+                    return { success: false, error: `فشل تنزيل المكتبات: ${run.conclusion}`, logs: pubgets[pubgetId].logs };
+                }
+            }
+        }
+    }
+    
+    pubgets[pubgetId].logs += `⏰ انتهت مهلة الانتظار\n`;
+    return { success: false, error: 'انتهت مهلة الانتظار', logs: pubgets[pubgetId].logs };
 }
 
 // ============================================================
