@@ -32,10 +32,8 @@ app.post('/build', upload.single('file'), async (req, res) => {
             return res.status(400).json({ status: 'error', message: 'لم يتم إرسال ملف' });
         }
 
-        // إنشاء build_id فريد
         const buildId = Date.now().toString();
         
-        // حفظ حالة البناء
         builds[buildId] = {
             status: 'uploading',
             downloadUrl: null,
@@ -44,10 +42,8 @@ app.post('/build', upload.single('file'), async (req, res) => {
             started: new Date()
         };
 
-        // الرد فوراً بـ build_id
         res.json({ status: 'building', build_id: buildId });
 
-        // متابعة البناء في الخلفية
         processBuild(buildId, zipFile);
 
     } catch (error) {
@@ -74,7 +70,6 @@ app.get('/status/:buildId', (req, res) => {
         logs: build.logs || ''
     });
     
-    // تنظيف البناءات القديمة (أكثر من 30 دقيقة)
     if (build.status === 'success' || build.status === 'error') {
         const thirtyMinAgo = Date.now() - 30 * 60 * 1000;
         for (const id in builds) {
@@ -94,7 +89,6 @@ async function processBuild(buildId, zipFile) {
         builds[buildId].logs += '📦 بدء عملية البناء\n';
         console.log(`[${buildId}] بدء عملية البناء`);
 
-        // 1. فك ضغط ZIP
         builds[buildId].logs += '📂 فك ضغط المشروع...\n';
         console.log(`[${buildId}] فك ضغط الملف...`);
         const zip = new AdmZip(zipFile.path);
@@ -102,7 +96,6 @@ async function processBuild(buildId, zipFile) {
         zip.extractAllTo(projectDir, true);
         builds[buildId].logs += '✓ تم فك ضغط المشروع\n';
 
-        // 2. رفع الملفات إلى GitHub
         builds[buildId].status = 'uploading_to_github';
         builds[buildId].logs += '📤 رفع الملفات إلى GitHub...\n';
         console.log(`[${buildId}] رفع الملفات إلى GitHub...`);
@@ -110,13 +103,11 @@ async function processBuild(buildId, zipFile) {
         builds[buildId].logs += '✓ تم رفع الملفات بنجاح\n';
         console.log(`[${buildId}] تم رفع الملفات بنجاح`);
 
-        // 3. انتظار البناء
         builds[buildId].status = 'building';
         builds[buildId].logs += '⏳ انتظار اكتمال البناء من GitHub Actions...\n';
         console.log(`[${buildId}] انتظار GitHub Actions...`);
         const result = await waitForBuild(buildId);
 
-        // 4. تنظيف
         try {
             fs.rmSync(zipFile.path);
             fs.rmSync(projectDir, { recursive: true, force: true });
@@ -158,24 +149,20 @@ async function uploadToGitHub(projectDir, buildId) {
         'User-Agent': 'FlutterIDE-Server'
     };
 
-    // 1. Get latest commit
     builds[buildId].logs += '📡 جلب آخر commit من GitHub...\n';
     const branchRes = await axios.get(`${apiBase}/branches/${GITHUB_BRANCH}`, { headers });
     const latestSha = branchRes.data.commit.sha;
     const treeSha = branchRes.data.commit.commit.tree.sha;
 
-    // 2. Create blobs and tree
     const treeItems = [];
     await createTreeItems(projectDir, '', treeItems, headers, apiBase, buildId);
 
-    // 3. Create tree
     builds[buildId].logs += '🌳 إنشاء شجرة الملفات...\n';
     const treeRes = await axios.post(`${apiBase}/git/trees`, {
         tree: treeItems,
         base_tree: treeSha
     }, { headers });
 
-    // 4. Create commit
     builds[buildId].logs += '💾 إنشاء commit جديد...\n';
     const commitRes = await axios.post(`${apiBase}/git/commits`, {
         message: `Build from FlutterIDE - ${new Date().toISOString()}`,
@@ -183,7 +170,6 @@ async function uploadToGitHub(projectDir, buildId) {
         parents: [latestSha]
     }, { headers });
 
-    // 5. Update branch
     builds[buildId].logs += '🚀 دفع التغييرات إلى GitHub...\n';
     await axios.patch(`${apiBase}/git/refs/heads/${GITHUB_BRANCH}`, {
         sha: commitRes.data.sha
@@ -205,7 +191,6 @@ async function createTreeItems(dirPath, basePath, treeItems, headers, apiBase, b
             const encoding = isBinary ? 'base64' : 'utf-8';
             const encodedContent = isBinary ? content.toString('base64') : content.toString('utf-8');
             
-            // Create blob
             const blobRes = await axios.post(`${apiBase}/git/blobs`, {
                 content: encodedContent,
                 encoding: encoding
@@ -232,14 +217,13 @@ async function waitForBuild(buildId) {
         'User-Agent': 'FlutterIDE-Server'
     };
 
-    // جلب آخر run قبل البناء
     const initialRuns = await axios.get(`${apiBase}/actions/runs?branch=${GITHUB_BRANCH}&per_page=1`, { headers });
     const lastRunBefore = initialRuns.data.workflow_runs[0]?.id || 0;
     
     builds[buildId].logs += `🔍 آخر run موجود قبل البناء: ${lastRunBefore}\n`;
     console.log(`[${buildId}] آخر run موجود قبل البناء: ${lastRunBefore}`);
 
-    for (let i = 0; i < 120; i++) {
+    for (let i = 0; i < 150; i++) {
         await new Promise(resolve => setTimeout(resolve, 5000));
         
         const elapsed = (i + 1) * 5;
@@ -273,52 +257,68 @@ async function waitForBuild(buildId) {
                     builds[buildId].logs += `❌ فشل البناء (${run.conclusion})\n`;
                     console.log(`[${buildId}] فشل البناء (${run.conclusion})`);
                     
-                    // جلب سجلات البناء التفصيلية من GitHub Actions
                     builds[buildId].logs += `📥 جلب سجلات البناء التفصيلية من GitHub...\n`;
                     
                     try {
-                        // 1. جلب سجلات الـ run الخام (تحتوي على أخطاء Flutter/Gradle)
+                        // جلب السجلات المضغوطة من GitHub Actions
                         const logsUrl = `${apiBase}/actions/runs/${run.id}/logs`;
                         const logsRes = await axios.get(logsUrl, { 
                             headers, 
-                            responseType: 'text' 
+                            responseType: 'arraybuffer'
                         });
                         
                         if (logsRes.data && logsRes.data.length > 0) {
+                            // فك ضغط السجلات باستخدام adm-zip
+                            const zip = new AdmZip(Buffer.from(logsRes.data));
+                            const zipEntries = zip.getEntries();
+                            let allLogs = '';
+                            
+                            for (const entry of zipEntries) {
+                                if (!entry.isDirectory) {
+                                    allLogs += zip.readAsText(entry) + '\n';
+                                }
+                            }
+                            
                             builds[buildId].logs += `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
                             builds[buildId].logs += `📄 سجلات البناء التفصيلية (Flutter/Gradle):\n`;
                             builds[buildId].logs += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
                             
-                            // تجميع السجلات وعرض آخر 200 سطر فقط لتجنب الحجم الكبير
-                            const logLines = logsRes.data.split('\n');
-                            const relevantLines = [];
+                            // البحث عن الأسطر التي تحتوي على أخطاء (غير حساس لحالة الأحرف)
+                            const logLines = allLogs.split('\n');
+                            const errorKeywords = [
+                                'error:', 'Error:', 'ERROR:',
+                                'FAILURE:', 'FAILED:',
+                                'Exception:', 'exception:',
+                                'Could not find',
+                                'undefined',
+                                'syntax error',
+                                'Build failed',
+                                'gradle failed',
+                                'flutter build failed',
+                                'missing',
+                                'not found',
+                                'failed to'
+                            ];
                             
-                            // البحث عن الأسطر التي تحتوي على أخطاء
+                            const relevantLines = [];
                             for (const line of logLines) {
-                                if (line.includes('error:') || 
-                                    line.includes('Error:') || 
-                                    line.includes('ERROR:') ||
-                                    line.includes('FAILURE:') ||
-                                    line.includes('Exception:') ||
-                                    line.includes('Could not find') ||
-                                    line.includes('undefined') ||
-                                    line.includes('syntax error') ||
-                                    line.includes('Build failed')) {
-                                    relevantLines.push(line);
+                                for (const keyword of errorKeywords) {
+                                    if (line.toLowerCase().includes(keyword.toLowerCase())) {
+                                        relevantLines.push(line);
+                                        break;
+                                    }
                                 }
                             }
                             
-                            // إذا وجدت أخطاء محددة، اعرضها أولاً
                             if (relevantLines.length > 0) {
                                 builds[buildId].logs += `\n⚠️ الأخطاء المكتشفة:\n`;
-                                for (const line of relevantLines.slice(-30)) {
+                                for (const line of relevantLines.slice(-50)) {
                                     builds[buildId].logs += `  ❌ ${line}\n`;
                                 }
                             }
                             
-                            // عرض آخر 100 سطر من السجلات الكاملة
-                            builds[buildId].logs += `\n📋 آخر 100 سطر من سجلات البناء:\n`;
-                            const lastLines = logLines.slice(-100);
+                            builds[buildId].logs += `\n📋 آخر 150 سطر من سجلات البناء:\n`;
+                            const lastLines = logLines.slice(-150);
                             for (const line of lastLines) {
                                 if (line.trim().length > 0) {
                                     builds[buildId].logs += `${line}\n`;
@@ -343,7 +343,7 @@ async function waitForBuild(buildId) {
         }
     }
     
-    builds[buildId].logs += `⏰ انتهت مهلة الانتظار (10 دقائق)\n`;
+    builds[buildId].logs += `⏰ انتهت مهلة الانتظار (12.5 دقيقة)\n`;
     return { 
         success: false, 
         error: 'انتهت مهلة الانتظار', 
