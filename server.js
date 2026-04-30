@@ -117,8 +117,10 @@ async function processBuild(buildId, zipFile) {
         const result = await waitForBuild(buildId);
 
         // 4. تنظيف
-        fs.rmSync(zipFile.path);
-        fs.rmSync(projectDir, { recursive: true, force: true });
+        try {
+            fs.rmSync(zipFile.path);
+            fs.rmSync(projectDir, { recursive: true, force: true });
+        } catch (e) {}
 
         if (result.success) {
             builds[buildId].status = 'success';
@@ -220,7 +222,7 @@ async function createTreeItems(dirPath, basePath, treeItems, headers, apiBase, b
 }
 
 // ============================================================
-// انتظار بناء GitHub Actions مع جلب السجلات
+// انتظار بناء GitHub Actions مع جلب السجلات التفصيلية
 // ============================================================
 async function waitForBuild(buildId) {
     const apiBase = `https://api.github.com/repos/${GITHUB_USERNAME}/${GITHUB_REPO}`;
@@ -237,7 +239,7 @@ async function waitForBuild(buildId) {
     builds[buildId].logs += `🔍 آخر run موجود قبل البناء: ${lastRunBefore}\n`;
     console.log(`[${buildId}] آخر run موجود قبل البناء: ${lastRunBefore}`);
 
-    for (let i = 0; i < 90; i++) {
+    for (let i = 0; i < 120; i++) {
         await new Promise(resolve => setTimeout(resolve, 5000));
         
         const elapsed = (i + 1) * 5;
@@ -271,46 +273,64 @@ async function waitForBuild(buildId) {
                     builds[buildId].logs += `❌ فشل البناء (${run.conclusion})\n`;
                     console.log(`[${buildId}] فشل البناء (${run.conclusion})`);
                     
-                    // جلب سجلات البناء من GitHub Actions
-                    builds[buildId].logs += `📥 جلب سجلات البناء من GitHub...\n`;
+                    // جلب سجلات البناء التفصيلية من GitHub Actions
+                    builds[buildId].logs += `📥 جلب سجلات البناء التفصيلية من GitHub...\n`;
+                    
                     try {
-                        // جلب قائمة jobs لهذا الـ run
-                        const jobsRes = await axios.get(`${apiBase}/actions/runs/${run.id}/jobs`, { headers });
+                        // 1. جلب سجلات الـ run الخام (تحتوي على أخطاء Flutter/Gradle)
+                        const logsUrl = `${apiBase}/actions/runs/${run.id}/logs`;
+                        const logsRes = await axios.get(logsUrl, { 
+                            headers, 
+                            responseType: 'text' 
+                        });
                         
-                        if (jobsRes.data.jobs && jobsRes.data.jobs.length > 0) {
-                            for (const job of jobsRes.data.jobs) {
-                                builds[buildId].logs += `\n📋 Job: ${job.name} (${job.conclusion})\n`;
-                                
-                                // جلب سجلات كل job
-                                if (job.steps && job.steps.length > 0) {
-                                    for (const step of job.steps) {
-                                        if (step.conclusion === 'failure' || step.conclusion === 'success') {
-                                            builds[buildId].logs += `  ▶ ${step.name}: ${step.conclusion}\n`;
-                                        }
-                                    }
+                        if (logsRes.data && logsRes.data.length > 0) {
+                            builds[buildId].logs += `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+                            builds[buildId].logs += `📄 سجلات البناء التفصيلية (Flutter/Gradle):\n`;
+                            builds[buildId].logs += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+                            
+                            // تجميع السجلات وعرض آخر 200 سطر فقط لتجنب الحجم الكبير
+                            const logLines = logsRes.data.split('\n');
+                            const relevantLines = [];
+                            
+                            // البحث عن الأسطر التي تحتوي على أخطاء
+                            for (const line of logLines) {
+                                if (line.includes('error:') || 
+                                    line.includes('Error:') || 
+                                    line.includes('ERROR:') ||
+                                    line.includes('FAILURE:') ||
+                                    line.includes('Exception:') ||
+                                    line.includes('Could not find') ||
+                                    line.includes('undefined') ||
+                                    line.includes('syntax error') ||
+                                    line.includes('Build failed')) {
+                                    relevantLines.push(line);
                                 }
                             }
-                        }
-                        
-                        // محاولة جلب الـ logs الخام
-                        try {
-                            const logsUrl = `${apiBase}/actions/runs/${run.id}/logs`;
-                            const logsRes = await axios.get(logsUrl, { headers, responseType: 'text' });
-                            if (logsRes.data && logsRes.data.length > 0) {
-                                builds[buildId].logs += `\n📄 سجلات البناء التفصيلية:\n`;
-                                builds[buildId].logs += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
-                                // أخذ آخر 50 سطر فقط لتجنب الحجم الكبير
-                                const logLines = logsRes.data.split('\n');
-                                const lastLines = logLines.slice(-50);
-                                builds[buildId].logs += lastLines.join('\n');
-                                builds[buildId].logs += `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+                            
+                            // إذا وجدت أخطاء محددة، اعرضها أولاً
+                            if (relevantLines.length > 0) {
+                                builds[buildId].logs += `\n⚠️ الأخطاء المكتشفة:\n`;
+                                for (const line of relevantLines.slice(-30)) {
+                                    builds[buildId].logs += `  ❌ ${line}\n`;
+                                }
                             }
-                        } catch (logErr) {
-                            builds[buildId].logs += `⚠️ لم يتم العثور على سجلات إضافية\n`;
+                            
+                            // عرض آخر 100 سطر من السجلات الكاملة
+                            builds[buildId].logs += `\n📋 آخر 100 سطر من سجلات البناء:\n`;
+                            const lastLines = logLines.slice(-100);
+                            for (const line of lastLines) {
+                                if (line.trim().length > 0) {
+                                    builds[buildId].logs += `${line}\n`;
+                                }
+                            }
+                            builds[buildId].logs += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+                        } else {
+                            builds[buildId].logs += `⚠️ لا توجد سجلات تفصيلية متاحة\n`;
                         }
                         
-                    } catch (jobErr) {
-                        builds[buildId].logs += `⚠️ فشل في جلب سجلات البناء: ${jobErr.message}\n`;
+                    } catch (logErr) {
+                        builds[buildId].logs += `⚠️ فشل في جلب السجلات التفصيلية: ${logErr.message}\n`;
                     }
                     
                     return { 
@@ -323,7 +343,7 @@ async function waitForBuild(buildId) {
         }
     }
     
-    builds[buildId].logs += `⏰ انتهت مهلة الانتظار (7.5 دقيقة)\n`;
+    builds[buildId].logs += `⏰ انتهت مهلة الانتظار (10 دقائق)\n`;
     return { 
         success: false, 
         error: 'انتهت مهلة الانتظار', 
