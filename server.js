@@ -145,10 +145,10 @@ app.get('/pubget-status/:pubgetId', (req, res) => {
 async function processBuild(buildId, zipFile) {
     try {
         builds[buildId].status = 'extracting';
-        builds[buildId].logs += '📦 بدء عملية البناء\n';
+        builds[buildId].logs += ' بدء عملية البناء\n';
         console.log(`[${buildId}] بدء عملية البناء`);
 
-        builds[buildId].logs += '📂 فك ضغط المشروع...\n';
+        builds[buildId].logs += 'فك ضغط المشروع...\n';
         console.log(`[${buildId}] فك ضغط الملف...`);
         const zip = new AdmZip(zipFile.path);
         const projectDir = path.join(__dirname, 'temp', buildId);
@@ -156,15 +156,15 @@ async function processBuild(buildId, zipFile) {
         builds[buildId].logs += '✓ تم فك ضغط المشروع\n';
 
         builds[buildId].status = 'uploading_to_github';
-        builds[buildId].logs += '📤 رفع الملفات إلى GitHub...\n';
-        console.log(`[${buildId}] رفع الملفات إلى GitHub...`);
+        builds[buildId].logs += ' رفع الملفات إلى ...\n';
+        console.log(`[${buildId}] رفع الملفات إلى ...`);
         await uploadToGitHub(projectDir, buildId);
         builds[buildId].logs += '✓ تم رفع الملفات بنجاح\n';
         console.log(`[${buildId}] تم رفع الملفات بنجاح`);
 
         builds[buildId].status = 'building';
-        builds[buildId].logs += '⏳ انتظار اكتمال البناء من GitHub Actions...\n';
-        console.log(`[${buildId}] انتظار GitHub Actions...`);
+        builds[buildId].logs += ' انتظار اكتمال البناء (قد يستغرق 2-7 دقائق )  ...\n';
+        console.log(`[${buildId}] انتظار  ...`);
         const result = await waitForBuild(buildId);
 
         try {
@@ -175,13 +175,13 @@ async function processBuild(buildId, zipFile) {
         if (result.success) {
             builds[buildId].status = 'success';
             builds[buildId].downloadUrl = result.downloadUrl;
-            builds[buildId].logs += '✅ تم البناء بنجاح!\n';
-            builds[buildId].logs += `📥 رابط التنزيل: ${result.downloadUrl}\n`;
+            builds[buildId].logs += ' تم البناء بنجاح!\n';
+            builds[buildId].logs += ` رابط التنزيل: ${result.downloadUrl}\n`;
             console.log(`[${buildId}] تم البناء بنجاح!`);
         } else {
             builds[buildId].status = 'error';
             builds[buildId].error = result.error;
-            builds[buildId].logs += result.logs || '❌ فشل البناء على GitHub Actions\n';
+            builds[buildId].logs += result.logs || ' فشل البناء   \n';
             console.log(`[${buildId}] فشل البناء`);
         }
 
@@ -203,10 +203,10 @@ async function processBuild(buildId, zipFile) {
 async function processPubGet(pubgetId, zipFile) {
     try {
         pubgets[pubgetId].status = 'extracting';
-        pubgets[pubgetId].logs += '📦 بدء تنزيل المكتبات\n';
+        pubgets[pubgetId].logs += ' بدء تنزيل المكتبات\n';
         console.log(`[${pubgetId}] بدء تنزيل المكتبات`);
 
-        pubgets[pubgetId].logs += '📂 فك ضغط المشروع...\n';
+        pubgets[pubgetId].logs += ' فك ضغط المشروع...\n';
         console.log(`[${pubgetId}] فك ضغط الملف...`);
         const zip = new AdmZip(zipFile.path);
         const projectDir = path.join(__dirname, 'temp_pubget', pubgetId);
@@ -214,14 +214,14 @@ async function processPubGet(pubgetId, zipFile) {
         pubgets[pubgetId].logs += '✓ تم فك ضغط المشروع\n';
 
         pubgets[pubgetId].status = 'uploading_to_github';
-        pubgets[pubgetId].logs += '📤 رفع الملفات إلى GitHub...\n';
+        pubgets[pubgetId].logs += ' رفع الملفات  ...\n';
         console.log(`[${pubgetId}] رفع الملفات إلى GitHub...`);
         await uploadToGitHub(projectDir, pubgetId);
         pubgets[pubgetId].logs += '✓ تم رفع الملفات بنجاح\n';
         console.log(`[${pubgetId}] تم رفع الملفات بنجاح`);
 
         pubgets[pubgetId].status = 'pubgetting';
-        pubgets[pubgetId].logs += '⏳ انتظار اكتمال تنزيل المكتبات من GitHub Actions...\n';
+        pubgets[pubgetId].logs += ' انتظار اكتمال تنزيل المكتبات من...\n';
         console.log(`[${pubgetId}] انتظار تنزيل المكتبات...`);
         const result = await waitForPubGet(pubgetId);
 
@@ -232,12 +232,12 @@ async function processPubGet(pubgetId, zipFile) {
 
         if (result.success) {
             pubgets[pubgetId].status = 'success';
-            pubgets[pubgetId].logs += '✅ تم تنزيل المكتبات بنجاح!\n';
+            pubgets[pubgetId].logs += ' تم تنزيل المكتبات بنجاح!\n';
             console.log(`[${pubgetId}] تم تنزيل المكتبات بنجاح!`);
         } else {
             pubgets[pubgetId].status = 'error';
             pubgets[pubgetId].error = result.error;
-            pubgets[pubgetId].logs += result.logs || '❌ فشل تنزيل المكتبات\n';
+            pubgets[pubgetId].logs += result.logs || ' فشل تنزيل المكتبات\n';
             console.log(`[${pubgetId}] فشل تنزيل المكتبات`);
         }
 
@@ -331,14 +331,14 @@ async function waitForBuild(buildId) {
     const initialRuns = await axios.get(`${apiBase}/actions/runs?branch=${GITHUB_BRANCH}&per_page=1`, { headers });
     const lastRunBefore = initialRuns.data.workflow_runs[0]?.id || 0;
     
-    builds[buildId].logs += `🔍 آخر run موجود قبل البناء: ${lastRunBefore}\n`;
+    builds[buildId].logs += `run...: ${lastRunBefore}\n`;
 
     for (let i = 0; i < 150; i++) {
         await new Promise(resolve => setTimeout(resolve, 5000));
         
         const elapsed = (i + 1) * 5;
         if (elapsed % 30 === 0) {
-            builds[buildId].logs += `⏳ انتظار البناء... (${elapsed} ثانية)\n`;
+            builds[buildId].logs += ` انتظار البناء... (${elapsed} ثانية)\n`;
         }
 
         const runsRes = await axios.get(`${apiBase}/actions/runs?branch=${GITHUB_BRANCH}&per_page=5`, { headers });
@@ -348,11 +348,11 @@ async function waitForBuild(buildId) {
                 continue;
             }
             
-            builds[buildId].logs += `📊 Run #${run.id}: ${run.status} (${run.conclusion || 'pending'})\n`;
+            builds[buildId].logs += ` Run #${run.id}: ${run.status} (${run.conclusion || 'pending'})\n`;
             
             if (run.status === 'completed') {
                 if (run.conclusion === 'success') {
-                    builds[buildId].logs += `✅ اكتمل البناء بنجاح!\n`;
+                    builds[buildId].logs += `اكتمل البناء بنجاح!\n`;
                     const releasesRes = await axios.get(`${apiBase}/releases?per_page=1`, { headers });
                     if (releasesRes.data.length > 0 && releasesRes.data[0].assets.length > 0) {
                         const downloadUrl = releasesRes.data[0].assets[0].browser_download_url;
@@ -360,8 +360,8 @@ async function waitForBuild(buildId) {
                     }
                     return { success: false, error: 'لم يتم العثور على ملف APK', logs: builds[buildId].logs };
                 } else {
-                    builds[buildId].logs += `❌ فشل البناء (${run.conclusion})\n`;
-                    builds[buildId].logs += `📥 جلب سجلات البناء التفصيلية من GitHub...\n`;
+                    builds[buildId].logs += ` فشل البناء (${run.conclusion})\n`;
+                    builds[buildId].logs += ` جلب سجلات البناء...\n`;
                     
                     try {
                         const logsUrl = `${apiBase}/actions/runs/${run.id}/logs`;
@@ -402,13 +402,13 @@ async function waitForBuild(buildId) {
                             }
                             
                             if (relevantLines.length > 0) {
-                                builds[buildId].logs += `\n⚠️ الأخطاء المكتشفة:\n`;
+                                builds[buildId].logs += `\n الأخطاء المكتشفة:\n`;
                                 for (const line of relevantLines.slice(-30)) {
                                     builds[buildId].logs += `  ❌ ${line}\n`;
                                 }
                             }
                             
-                            builds[buildId].logs += `\n📋 آخر 100 سطر من سجلات البناء:\n`;
+                            builds[buildId].logs += `\n   سطر سجلات البناء:\n`;
                             const lastLines = logLines.slice(-100);
                             for (const line of lastLines) {
                                 if (line.trim().length > 0) {
@@ -417,7 +417,7 @@ async function waitForBuild(buildId) {
                             }
                         }
                     } catch (logErr) {
-                        builds[buildId].logs += `⚠️ فشل في جلب السجلات التفصيلية\n`;
+                        builds[buildId].logs += ` فشل في جلب السجلات \n`;
                     }
                     
                     return { success: false, error: `فشل البناء: ${run.conclusion}`, logs: builds[buildId].logs };
@@ -426,7 +426,7 @@ async function waitForBuild(buildId) {
         }
     }
     
-    builds[buildId].logs += `⏰ انتهت مهلة الانتظار (12.5 دقيقة)\n`;
+    builds[buildId].logs += ` انتهت مهلة الانتظار (12.5 دقيقة)\n`;
     return { success: false, error: 'انتهت مهلة الانتظار', logs: builds[buildId].logs };
 }
 
@@ -444,7 +444,7 @@ async function waitForPubGet(pubgetId) {
     const initialRuns = await axios.get(`${apiBase}/actions/runs?branch=${GITHUB_BRANCH}&per_page=1`, { headers });
     const lastRunBefore = initialRuns.data.workflow_runs[0]?.id || 0;
     
-    pubgets[pubgetId].logs += `🔍 آخر run موجود قبل العملية: ${lastRunBefore}\n`;
+    pubgets[pubgetId].logs += `run...: ${lastRunBefore}\n`;
 
     for (let i = 0; i < 60; i++) {
         await new Promise(resolve => setTimeout(resolve, 5000));
@@ -456,21 +456,21 @@ async function waitForPubGet(pubgetId) {
                 continue;
             }
             
-            pubgets[pubgetId].logs += `📊 Run #${run.id}: ${run.status}\n`;
+            pubgets[pubgetId].logs += ` Run #${run.id}: ${run.status}\n`;
             
             if (run.status === 'completed') {
                 if (run.conclusion === 'success') {
-                    pubgets[pubgetId].logs += `✅ اكتمل تنزيل المكتبات بنجاح!\n`;
+                    pubgets[pubgetId].logs += ` اكتمل تنزيل المكتبات بنجاح!\n`;
                     return { success: true };
                 } else {
-                    pubgets[pubgetId].logs += `❌ فشل تنزيل المكتبات (${run.conclusion})\n`;
+                    pubgets[pubgetId].logs += `فشل تنزيل المكتبات (${run.conclusion})\n`;
                     return { success: false, error: `فشل تنزيل المكتبات: ${run.conclusion}`, logs: pubgets[pubgetId].logs };
                 }
             }
         }
     }
     
-    pubgets[pubgetId].logs += `⏰ انتهت مهلة الانتظار\n`;
+    pubgets[pubgetId].logs += ` انتهت مهلة الانتظار\n`;
     return { success: false, error: 'انتهت مهلة الانتظار', logs: pubgets[pubgetId].logs };
 }
 
