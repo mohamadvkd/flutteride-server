@@ -327,7 +327,7 @@ async function processBuild(buildId, zipFile) {
 }
 
 // ============================================================
-// رفع الملفات إلى GitHub (طريقة مباشرة)
+// رفع الملفات إلى GitHub (مع إنشاء الفرع أولاً)
 // ============================================================
 async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
     const apiBase = `https://api.github.com/repos/${username}/${repoName}`;
@@ -339,14 +339,28 @@ async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
     
     const branchName = 'main';
     
+    // التحقق من وجود الفرع
+    let branchExists = false;
+    let mainBranchSha = null;
+    
+    try {
+        const branchRes = await axios.get(`${apiBase}/branches/${branchName}`, { headers });
+        branchExists = true;
+        mainBranchSha = branchRes.data.commit.sha;
+        builds[buildId].logs += `الفرع الرئيسي موجود\n`;
+    } catch (e) {
+        builds[buildId].logs += `الفرع الرئيسي غير موجود، سيتم إنشاؤه...\n`;
+    }
+    
     // جمع جميع الملفات من المشروع
     const files = [];
     await collectFiles(projectDir, '', files);
     
     builds[buildId].logs += `جاري رفع ${files.length} ملف...\n`;
     
-    // رفع كل ملف على حدة
+    // رفع كل ملف
     let fileCount = 0;
+    let lastCommitSha = mainBranchSha;
     
     for (const file of files) {
         try {
@@ -359,18 +373,45 @@ async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
             const body = {
                 message: `Add ${file.relativePath}`,
                 content: encodedContent,
-                encoding: encoding,
-                branch: branchName
+                encoding: encoding
             };
             
-            await axios.put(url, body, { headers });
+            if (branchExists) {
+                body.branch = branchName;
+            }
+            
+            if (lastCommitSha && branchExists) {
+                body.sha = lastCommitSha;
+            }
+            
+            const response = await axios.put(url, body, { headers });
+            
+            if (response.data && response.data.commit && response.data.commit.sha) {
+                lastCommitSha = response.data.commit.sha;
+            }
             
             fileCount++;
-            if (fileCount % 10 === 0) {
+            if (fileCount % 5 === 0) {
                 builds[buildId].logs += `تم رفع ${fileCount}/${files.length} ملف...\n`;
             }
         } catch (err) {
             builds[buildId].logs += `فشل رفع ${file.relativePath}: ${err.message}\n`;
+            throw err;
+        }
+    }
+    
+    // إذا لم يكن الفرع موجوداً، أنشئه بعد رفع الملفات
+    if (!branchExists && lastCommitSha) {
+        try {
+            const refUrl = `${apiBase}/git/refs`;
+            const refBody = {
+                ref: `refs/heads/${branchName}`,
+                sha: lastCommitSha
+            };
+            await axios.post(refUrl, refBody, { headers });
+            builds[buildId].logs += `تم إنشاء الفرع الرئيسي بنجاح\n`;
+        } catch (err) {
+            builds[buildId].logs += `فشل إنشاء الفرع الرئيسي: ${err.message}\n`;
             throw err;
         }
     }
