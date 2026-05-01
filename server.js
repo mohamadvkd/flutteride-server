@@ -25,7 +25,7 @@ const builds = {};
 // OAuth - بدء عملية تسجيل الدخول
 // ============================================================
 app.get('/auth/login', (req, res) => {
-    const authUrl = `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&redirect_uri=${GITHUB_REDIRECT_URI}&scope=repo%20workflow%20user`;
+    const authUrl = `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&redirect_uri=${GITHUB_REDIRECT_URI}&scope=repo%20workflow%20user&prompt=select_account`;
     res.json({ auth_url: authUrl });
 });
 
@@ -263,7 +263,7 @@ async function processBuild(buildId, zipFile) {
                     await axios.post('https://api.github.com/user/repos', {
                         name: repoName,
                         private: true,
-                        auto_init: true,  // إنشاء README.md تلقائياً
+                        auto_init: true,
                         description: 'FlutterIDE builds'
                     }, { headers });
                     build.logs += 'تم إنشاء المستودع بنجاح مع ملف README\n';
@@ -327,7 +327,7 @@ async function processBuild(buildId, zipFile) {
 }
 
 // ============================================================
-// رفع الملفات إلى GitHub
+// رفع الملفات إلى GitHub (طريقة commit واحد)
 // ============================================================
 async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
     const apiBase = `https://api.github.com/repos/${username}/${repoName}`;
@@ -339,51 +339,88 @@ async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
     
     const branchName = 'main';
     
+    // جلب أحدث commit من الفرع
+    let latestCommitSha = null;
+    let latestTreeSha = null;
+    
+    try {
+        const branchRes = await axios.get(`${apiBase}/branches/${branchName}`, { headers });
+        latestCommitSha = branchRes.data.commit.sha;
+        latestTreeSha = branchRes.data.commit.commit.tree.sha;
+        builds[buildId].logs += `تم العثور على الفرع الرئيسي\n`;
+    } catch (e) {
+        builds[buildId].logs += `الفرع الرئيسي غير موجود، سيتم إنشاؤه\n`;
+    }
+    
     // جمع جميع الملفات من المشروع
     const files = [];
     await collectFiles(projectDir, '', files);
     
     builds[buildId].logs += `جاري رفع ${files.length} ملف...\n`;
     
-    // رفع كل ملف على حدة باستخدام SHA لتتبع التغييرات
-    let lastCommitSha = null;
-    let fileCount = 0;
+    // إنشاء blobs لكل ملف
+    const blobs = [];
+    let blobCount = 0;
     
     for (const file of files) {
-        try {
-            const content = fs.readFileSync(file.path);
-            const isBinary = /\.(png|jpg|jpeg|gif|ico|webp|bmp)$/i.test(file.name);
-            const encoding = isBinary ? 'base64' : 'utf-8';
-            const encodedContent = isBinary ? content.toString('base64') : content.toString('utf-8');
-            
-            const url = `${apiBase}/contents/${file.relativePath}`;
-            const body = {
-                message: `Add ${file.relativePath}`,
-                content: encodedContent,
-                encoding: encoding,
-                branch: branchName
-            };
-            
-            if (lastCommitSha) {
-                body.sha = lastCommitSha;
-            }
-            
-            const response = await axios.put(url, body, { headers });
-            
-            if (response.data && response.data.commit && response.data.commit.sha) {
-                lastCommitSha = response.data.commit.sha;
-            }
-            
-            fileCount++;
-            if (fileCount % 5 === 0) {
-                builds[buildId].logs += `تم رفع ${fileCount}/${files.length} ملف...\n`;
-            }
-        } catch (err) {
-            builds[buildId].logs += `فشل رفع ${file.relativePath}: ${err.message}\n`;
-            throw err;
+        const content = fs.readFileSync(file.path);
+        const isBinary = /\.(png|jpg|jpeg|gif|ico|webp|bmp)$/i.test(file.name);
+        const encoding = isBinary ? 'base64' : 'utf-8';
+        const encodedContent = isBinary ? content.toString('base64') : content.toString('utf-8');
+        
+        const blobRes = await axios.post(`${apiBase}/git/blobs`, {
+            content: encodedContent,
+            encoding: encoding
+        }, { headers });
+        
+        blobs.push({
+            path: file.relativePath,
+            mode: '100644',
+            type: 'blob',
+            sha: blobRes.data.sha
+        });
+        
+        blobCount++;
+        if (blobCount % 10 === 0) {
+            builds[buildId].logs += `تم إنشاء ${blobCount}/${files.length} blob...\n`;
         }
     }
     
+    builds[buildId].logs += `تم إنشاء جميع blobs\n`;
+    
+    // إنشاء شجرة جديدة
+    const treeRes = await axios.post(`${apiBase}/git/trees`, {
+        tree: blobs,
+        base_tree: latestTreeSha
+    }, { headers });
+    const newTreeSha = treeRes.data.sha;
+    
+    builds[buildId].logs += `تم إنشاء الشجرة\n`;
+    
+    // إنشاء commit جديد
+    const commitRes = await axios.post(`${apiBase}/git/commits`, {
+        message: `Build from FlutterIDE - ${new Date().toISOString()}`,
+        tree: newTreeSha,
+        parents: latestCommitSha ? [latestCommitSha] : []
+    }, { headers });
+    const newCommitSha = commitRes.data.sha;
+    
+    builds[buildId].logs += `تم إنشاء commit\n`;
+    
+    // تحديث الفرع
+    if (latestCommitSha) {
+        await axios.patch(`${apiBase}/git/refs/heads/${branchName}`, {
+            sha: newCommitSha,
+            force: true
+        }, { headers });
+    } else {
+        await axios.post(`${apiBase}/git/refs`, {
+            ref: `refs/heads/${branchName}`,
+            sha: newCommitSha
+        }, { headers });
+    }
+    
+    builds[buildId].logs += `تم تحديث الفرع الرئيسي بنجاح\n`;
     builds[buildId].logs += `تم رفع ${files.length} ملف بنجاح\n`;
 }
 
