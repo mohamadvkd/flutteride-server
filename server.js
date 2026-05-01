@@ -327,7 +327,7 @@ async function processBuild(buildId, zipFile) {
 }
 
 // ============================================================
-// رفع الملفات إلى GitHub
+// رفع الملفات إلى GitHub (مع معالجة المستودع الفارغ)
 // ============================================================
 async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
     const apiBase = `https://api.github.com/repos/${username}/${repoName}`;
@@ -339,41 +339,56 @@ async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
     
     const branchName = 'main';
     let branchSha = null;
+    let isEmptyRepo = false;
     
     try {
         const branchRes = await axios.get(`${apiBase}/branches/${branchName}`, { headers });
         branchSha = branchRes.data.commit.sha;
         builds[buildId].logs += `تم العثور على الفرع الرئيسي\n`;
     } catch (e) {
-        builds[buildId].logs += `الفرع الرئيسي غير موجود، سيتم إنشاؤه\n`;
+        if (e.response && e.response.status === 404) {
+            builds[buildId].logs += `المستودع فارغ، سيتم إنشاء commit أولي\n`;
+            isEmptyRepo = true;
+        } else {
+            throw e;
+        }
     }
     
     const treeItems = [];
     await createTreeItems(projectDir, '', treeItems, headers, apiBase, buildId);
     
-    const treeRes = await axios.post(`${apiBase}/git/trees`, {
-        tree: treeItems,
-        base_tree: branchSha
-    }, { headers });
+    let treeSha;
+    if (isEmptyRepo) {
+        const treeRes = await axios.post(`${apiBase}/git/trees`, {
+            tree: treeItems
+        }, { headers });
+        treeSha = treeRes.data.sha;
+    } else {
+        const treeRes = await axios.post(`${apiBase}/git/trees`, {
+            tree: treeItems,
+            base_tree: branchSha
+        }, { headers });
+        treeSha = treeRes.data.sha;
+    }
     
     const commitRes = await axios.post(`${apiBase}/git/commits`, {
         message: `Build from FlutterIDE - ${new Date().toISOString()}`,
-        tree: treeRes.data.sha,
+        tree: treeSha,
         parents: branchSha ? [branchSha] : []
     }, { headers });
     
-    if (branchSha) {
+    if (isEmptyRepo) {
+        await axios.post(`${apiBase}/git/refs`, {
+            ref: `refs/heads/${branchName}`,
+            sha: commitRes.data.sha
+        }, { headers });
+        builds[buildId].logs += `تم إنشاء الفرع الرئيسي مع commit أولي\n`;
+    } else {
         await axios.patch(`${apiBase}/git/refs/heads/${branchName}`, {
             sha: commitRes.data.sha,
             force: true
         }, { headers });
         builds[buildId].logs += `تم تحديث الفرع الرئيسي\n`;
-    } else {
-        await axios.post(`${apiBase}/git/refs`, {
-            ref: `refs/heads/${branchName}`,
-            sha: commitRes.data.sha
-        }, { headers });
-        builds[buildId].logs += `تم إنشاء الفرع الرئيسي\n`;
     }
 }
 
