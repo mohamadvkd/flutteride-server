@@ -249,29 +249,40 @@ async function processBuild(buildId, zipFile) {
         zip.extractAllTo(projectDir, true);
         build.logs += 'تم فك ضغط المشروع\n';
         
+        // التحقق من وجود المستودع وإنشائه إذا لزم الأمر
         build.logs += 'التحقق من وجود المستودع...\n';
         let repoExists = false;
         try {
             await axios.get(apiBase, { headers });
             repoExists = true;
+            build.logs += 'المستودع موجود بالفعل، سيتم تحديثه...\n';
         } catch (e) {
             if (e.response && e.response.status === 404) {
                 build.logs += 'إنشاء مستودع جديد...\n';
-                await axios.post('https://api.github.com/user/repos', {
-                    name: repoName,
-                    private: true,
-                    auto_init: false,
-                    description: 'FlutterIDE builds'
-                }, { headers });
-                build.logs += 'تم إنشاء المستودع بنجاح\n';
-                repoExists = true;
+                try {
+                    await axios.post('https://api.github.com/user/repos', {
+                        name: repoName,
+                        private: true,
+                        auto_init: false,
+                        description: 'FlutterIDE builds'
+                    }, { headers });
+                    build.logs += 'تم إنشاء المستودع بنجاح\n';
+                    repoExists = true;
+                } catch (createError) {
+                    if (createError.response && createError.response.status === 409) {
+                        build.logs += 'المستودع موجود بالفعل (تضارب 409)، متابعة الرفع...\n';
+                        repoExists = true;
+                    } else {
+                        throw createError;
+                    }
+                }
             } else {
                 throw e;
             }
         }
         
         if (!repoExists) {
-            throw new Error('فشل في إنشاء المستودع');
+            throw new Error('فشل في إنشاء المستودع أو الوصول إليه');
         }
         
         build.status = 'uploading_to_github';
@@ -332,7 +343,10 @@ async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
     try {
         const branchRes = await axios.get(`${apiBase}/branches/${branchName}`, { headers });
         branchSha = branchRes.data.commit.sha;
-    } catch (e) {}
+        builds[buildId].logs += `تم العثور على الفرع الرئيسي\n`;
+    } catch (e) {
+        builds[buildId].logs += `الفرع الرئيسي غير موجود، سيتم إنشاؤه\n`;
+    }
     
     const treeItems = [];
     await createTreeItems(projectDir, '', treeItems, headers, apiBase, buildId);
@@ -353,11 +367,13 @@ async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
             sha: commitRes.data.sha,
             force: true
         }, { headers });
+        builds[buildId].logs += `تم تحديث الفرع الرئيسي\n`;
     } else {
         await axios.post(`${apiBase}/git/refs`, {
             ref: `refs/heads/${branchName}`,
             sha: commitRes.data.sha
         }, { headers });
+        builds[buildId].logs += `تم إنشاء الفرع الرئيسي\n`;
     }
 }
 
