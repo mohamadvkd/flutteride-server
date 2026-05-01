@@ -258,15 +258,15 @@ async function processBuild(buildId, zipFile) {
             build.logs += 'المستودع موجود بالفعل، سيتم تحديثه...\n';
         } catch (e) {
             if (e.response && e.response.status === 404) {
-                build.logs += 'إنشاء مستودع جديد...\n';
+                build.logs += 'إنشاء مستودع جديد مع ملف README...\n';
                 try {
                     await axios.post('https://api.github.com/user/repos', {
                         name: repoName,
                         private: true,
-                        auto_init: false,
+                        auto_init: true,  // إنشاء README.md تلقائياً
                         description: 'FlutterIDE builds'
                     }, { headers });
-                    build.logs += 'تم إنشاء المستودع بنجاح\n';
+                    build.logs += 'تم إنشاء المستودع بنجاح مع ملف README\n';
                     repoExists = true;
                 } catch (createError) {
                     if (createError.response && createError.response.status === 409) {
@@ -327,7 +327,7 @@ async function processBuild(buildId, zipFile) {
 }
 
 // ============================================================
-// رفع الملفات إلى GitHub (مع إنشاء الفرع أولاً)
+// رفع الملفات إلى GitHub
 // ============================================================
 async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
     const apiBase = `https://api.github.com/repos/${username}/${repoName}`;
@@ -339,28 +339,15 @@ async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
     
     const branchName = 'main';
     
-    // التحقق من وجود الفرع
-    let branchExists = false;
-    let mainBranchSha = null;
-    
-    try {
-        const branchRes = await axios.get(`${apiBase}/branches/${branchName}`, { headers });
-        branchExists = true;
-        mainBranchSha = branchRes.data.commit.sha;
-        builds[buildId].logs += `الفرع الرئيسي موجود\n`;
-    } catch (e) {
-        builds[buildId].logs += `الفرع الرئيسي غير موجود، سيتم إنشاؤه...\n`;
-    }
-    
     // جمع جميع الملفات من المشروع
     const files = [];
     await collectFiles(projectDir, '', files);
     
     builds[buildId].logs += `جاري رفع ${files.length} ملف...\n`;
     
-    // رفع كل ملف
+    // رفع كل ملف على حدة باستخدام SHA لتتبع التغييرات
+    let lastCommitSha = null;
     let fileCount = 0;
-    let lastCommitSha = mainBranchSha;
     
     for (const file of files) {
         try {
@@ -373,14 +360,11 @@ async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
             const body = {
                 message: `Add ${file.relativePath}`,
                 content: encodedContent,
-                encoding: encoding
+                encoding: encoding,
+                branch: branchName
             };
             
-            if (branchExists) {
-                body.branch = branchName;
-            }
-            
-            if (lastCommitSha && branchExists) {
+            if (lastCommitSha) {
                 body.sha = lastCommitSha;
             }
             
@@ -396,22 +380,6 @@ async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
             }
         } catch (err) {
             builds[buildId].logs += `فشل رفع ${file.relativePath}: ${err.message}\n`;
-            throw err;
-        }
-    }
-    
-    // إذا لم يكن الفرع موجوداً، أنشئه بعد رفع الملفات
-    if (!branchExists && lastCommitSha) {
-        try {
-            const refUrl = `${apiBase}/git/refs`;
-            const refBody = {
-                ref: `refs/heads/${branchName}`,
-                sha: lastCommitSha
-            };
-            await axios.post(refUrl, refBody, { headers });
-            builds[buildId].logs += `تم إنشاء الفرع الرئيسي بنجاح\n`;
-        } catch (err) {
-            builds[buildId].logs += `فشل إنشاء الفرع الرئيسي: ${err.message}\n`;
             throw err;
         }
     }
