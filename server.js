@@ -306,7 +306,7 @@ async function processBuild(buildId, zipFile) {
             build.status = 'success';
             build.downloadUrl = result.downloadUrl;
             build.logs += 'تم البناء بنجاح\n';
-            console.log(`[${buildId}] تم البناء بنجاح!`);
+            console.log(`[${buildId}] تم البناء بنجاح! رابط التحميل: ${result.downloadUrl}`);
         } else {
             build.status = 'error';
             build.error = result.error;
@@ -327,7 +327,7 @@ async function processBuild(buildId, zipFile) {
 }
 
 // ============================================================
-// رفع الملفات إلى GitHub (طريقة commit واحد)
+// رفع الملفات إلى GitHub
 // ============================================================
 async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
     const apiBase = `https://api.github.com/repos/${username}/${repoName}`;
@@ -352,7 +352,7 @@ async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
         builds[buildId].logs += `الفرع الرئيسي غير موجود، سيتم إنشاؤه\n`;
     }
     
-    // جمع جميع الملفات من المشروع (بما في ذلك المجلدات المخفية)
+    // جمع جميع الملفات من المشروع
     const files = [];
     await collectFiles(projectDir, '', files);
     
@@ -424,14 +424,10 @@ async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
     builds[buildId].logs += `تم رفع ${files.length} ملف بنجاح\n`;
 }
 
-// ============================================================
-// جمع الملفات من المشروع (تشمل المجلدات المخفية)
-// ============================================================
 async function collectFiles(dirPath, relativePath, files) {
     const items = fs.readdirSync(dirPath);
     
     for (const item of items) {
-        // نتخطى .gitignore فقط، ونقبل جميع المجلدات الأخرى بما فيها .github
         if (item === '.gitignore') continue;
         
         const fullPath = path.join(dirPath, item);
@@ -450,7 +446,7 @@ async function collectFiles(dirPath, relativePath, files) {
 }
 
 // ============================================================
-// انتظار بناء GitHub Actions مع جلب السجلات
+// انتظار بناء GitHub Actions وجلب APK من Artifact
 // ============================================================
 async function waitForBuild(repoName, username, token, buildId) {
     const apiBase = `https://api.github.com/repos/${username}/${repoName}`;
@@ -480,12 +476,29 @@ async function waitForBuild(repoName, username, token, buildId) {
             if (run.status === 'completed') {
                 if (run.conclusion === 'success') {
                     builds[buildId].logs += `اكتمل البناء بنجاح\n`;
-                    const releasesRes = await axios.get(`${apiBase}/releases?per_page=1`, { headers });
-                    if (releasesRes.data.length > 0 && releasesRes.data[0].assets.length > 0) {
-                        const downloadUrl = releasesRes.data[0].assets[0].browser_download_url;
-                        return { success: true, downloadUrl: downloadUrl };
+                    
+                    // جلب Artifact بدلاً من Release
+                    try {
+                        const artifactsRes = await axios.get(`${apiBase}/actions/runs/${run.id}/artifacts`, { headers });
+                        
+                        if (artifactsRes.data.artifacts && artifactsRes.data.artifacts.length > 0) {
+                            const artifact = artifactsRes.data.artifacts.find(a => a.name === 'app-release');
+                            if (artifact) {
+                                // جلب رابط التحميل المباشر لـ Artifact
+                                const downloadUrl = artifact.archive_download_url;
+                                builds[buildId].logs += `تم العثور على Artifact: ${artifact.name}\n`;
+                                return { success: true, downloadUrl: downloadUrl };
+                            } else {
+                                builds[buildId].logs += `لم يتم العثور على Artifact باسم app-release\n`;
+                            }
+                        } else {
+                            builds[buildId].logs += `لا توجد Artifacts في هذا الـ run\n`;
+                        }
+                    } catch (artifactErr) {
+                        builds[buildId].logs += `فشل في جلب Artifact: ${artifactErr.message}\n`;
                     }
-                    return { success: false, error: 'لم يتم العثور على ملف APK', logs: builds[buildId].logs };
+                    
+                    return { success: false, error: 'لم يتم العثور على APK', logs: builds[buildId].logs };
                 } else {
                     builds[buildId].logs += `فشل البناء (${run.conclusion})\n`;
                     builds[buildId].logs += `جلب سجلات البناء...\n`;
