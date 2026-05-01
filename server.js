@@ -286,14 +286,14 @@ async function processBuild(buildId, zipFile) {
         }
         
         build.status = 'uploading_to_github';
-        build.logs += 'رفع الملفات إلى GitHub...\n';
-        console.log(`[${buildId}] رفع الملفات إلى GitHub...`);
+        build.logs += 'رفع الملفات  ...\n';
+        console.log(`[${buildId}] رفع الملفات  ...`);
         await uploadToGitHub(projectDir, repoName, username, token, buildId);
         build.logs += 'تم رفع الملفات بنجاح\n';
         console.log(`[${buildId}] تم رفع الملفات بنجاح`);
         
         build.status = 'building';
-        build.logs += 'انتظار اكتمال البناء من GitHub Actions...\n';
+        build.logs += 'انتظار اكتمال البناء (قد يستغرق من 3-7 دقائق )  \n';
         console.log(`[${buildId}] انتظار GitHub Actions...`);
         const result = await waitForBuild(repoName, username, token, buildId);
         
@@ -548,7 +548,7 @@ async function waitForBuild(repoName, username, token, buildId) {
                                 }
                             }
                             
-                            builds[buildId].logs += `\nآخر 100 سطر من سجلات البناء:\n`;
+                            builds[buildId].logs += ` سجلات البناء:\n`;
                             const lastLines = logLines.slice(-100);
                             for (const line of lastLines) {
                                 if (line.trim().length > 0) {
