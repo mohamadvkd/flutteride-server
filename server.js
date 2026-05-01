@@ -30,7 +30,7 @@ app.get('/auth/login', (req, res) => {
 });
 
 // ============================================================
-// OAuth - Callback بعد تسجيل الدخول (مع redirect مباشر)
+// OAuth - Callback بعد تسجيل الدخول
 // ============================================================
 app.get('/auth/callback', async (req, res) => {
     const { code } = req.query;
@@ -58,7 +58,6 @@ app.get('/auth/callback', async (req, res) => {
         
         const username = userRes.data.login;
         
-        // إعادة توجيه مباشرة إلى التطبيق (بدون HTML)
         const redirectUrl = `flutteride://auth/callback?access_token=${accessToken}&refresh_token=${refreshToken}&username=${username}`;
         res.redirect(302, redirectUrl);
         
@@ -108,6 +107,40 @@ app.post('/auth/token', async (req, res) => {
 });
 
 // ============================================================
+// OAuth - تجديد التوكن (Refresh Token)
+// ============================================================
+app.post('/auth/refresh', async (req, res) => {
+    const { refresh_token } = req.body;
+    
+    if (!refresh_token) {
+        return res.status(400).json({ error: 'Refresh token is required' });
+    }
+    
+    try {
+        const tokenRes = await axios.post('https://github.com/login/oauth/access_token', {
+            client_id: GITHUB_CLIENT_ID,
+            client_secret: GITHUB_CLIENT_SECRET,
+            refresh_token: refresh_token,
+            grant_type: 'refresh_token'
+        }, {
+            headers: { 'Accept': 'application/json' }
+        });
+        
+        const accessToken = tokenRes.data.access_token;
+        const newRefreshToken = tokenRes.data.refresh_token || refresh_token;
+        
+        res.json({
+            access_token: accessToken,
+            refresh_token: newRefreshToken
+        });
+        
+    } catch (error) {
+        console.error('Refresh token error:', error.response?.data || error.message);
+        res.status(401).json({ error: 'Invalid refresh token' });
+    }
+});
+
+// ============================================================
 // استقبال ZIP وبدء البناء (مع توكن المستخدم)
 // ============================================================
 app.post('/build', upload.single('file'), async (req, res) => {
@@ -125,7 +158,6 @@ app.post('/build', upload.single('file'), async (req, res) => {
         
         const token = userToken.replace('Bearer ', '');
         
-        // التحقق من صحة التوكن
         let userInfo;
         try {
             const userRes = await axios.get('https://api.github.com/user', {
@@ -133,6 +165,9 @@ app.post('/build', upload.single('file'), async (req, res) => {
             });
             userInfo = userRes.data;
         } catch (error) {
+            if (error.response && error.response.status === 401) {
+                return res.status(401).json({ status: 'error', message: 'توكن منتهي، يرجى تحديث الجلسة' });
+            }
             return res.status(401).json({ status: 'error', message: 'توكن غير صالح، يرجى تسجيل الدخول مرة أخرى' });
         }
         
@@ -214,7 +249,6 @@ async function processBuild(buildId, zipFile) {
         zip.extractAllTo(projectDir, true);
         build.logs += 'تم فك ضغط المشروع\n';
         
-        // إنشاء المستودع إذا لم يكن موجوداً
         build.logs += 'التحقق من وجود المستودع...\n';
         let repoExists = false;
         try {
