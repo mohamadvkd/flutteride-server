@@ -327,7 +327,7 @@ async function processBuild(buildId, zipFile) {
 }
 
 // ============================================================
-// رفع الملفات إلى GitHub (مع معالجة المستودع الفارغ)
+// رفع الملفات إلى GitHub (طريقة مباشرة)
 // ============================================================
 async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
     const apiBase = `https://api.github.com/repos/${username}/${repoName}`;
@@ -338,85 +338,60 @@ async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
     };
     
     const branchName = 'main';
-    let branchSha = null;
-    let isEmptyRepo = false;
     
-    try {
-        const branchRes = await axios.get(`${apiBase}/branches/${branchName}`, { headers });
-        branchSha = branchRes.data.commit.sha;
-        builds[buildId].logs += `تم العثور على الفرع الرئيسي\n`;
-    } catch (e) {
-        if (e.response && e.response.status === 404) {
-            builds[buildId].logs += `المستودع فارغ، سيتم إنشاء commit أولي\n`;
-            isEmptyRepo = true;
-        } else {
-            throw e;
+    // جمع جميع الملفات من المشروع
+    const files = [];
+    await collectFiles(projectDir, '', files);
+    
+    builds[buildId].logs += `جاري رفع ${files.length} ملف...\n`;
+    
+    // رفع كل ملف على حدة
+    let fileCount = 0;
+    
+    for (const file of files) {
+        try {
+            const content = fs.readFileSync(file.path);
+            const isBinary = /\.(png|jpg|jpeg|gif|ico|webp|bmp)$/i.test(file.name);
+            const encoding = isBinary ? 'base64' : 'utf-8';
+            const encodedContent = isBinary ? content.toString('base64') : content.toString('utf-8');
+            
+            const url = `${apiBase}/contents/${file.relativePath}`;
+            const body = {
+                message: `Add ${file.relativePath}`,
+                content: encodedContent,
+                encoding: encoding,
+                branch: branchName
+            };
+            
+            await axios.put(url, body, { headers });
+            
+            fileCount++;
+            if (fileCount % 10 === 0) {
+                builds[buildId].logs += `تم رفع ${fileCount}/${files.length} ملف...\n`;
+            }
+        } catch (err) {
+            builds[buildId].logs += `فشل رفع ${file.relativePath}: ${err.message}\n`;
+            throw err;
         }
     }
     
-    const treeItems = [];
-    await createTreeItems(projectDir, '', treeItems, headers, apiBase, buildId);
-    
-    let treeSha;
-    if (isEmptyRepo) {
-        const treeRes = await axios.post(`${apiBase}/git/trees`, {
-            tree: treeItems
-        }, { headers });
-        treeSha = treeRes.data.sha;
-    } else {
-        const treeRes = await axios.post(`${apiBase}/git/trees`, {
-            tree: treeItems,
-            base_tree: branchSha
-        }, { headers });
-        treeSha = treeRes.data.sha;
-    }
-    
-    const commitRes = await axios.post(`${apiBase}/git/commits`, {
-        message: `Build from FlutterIDE - ${new Date().toISOString()}`,
-        tree: treeSha,
-        parents: branchSha ? [branchSha] : []
-    }, { headers });
-    
-    if (isEmptyRepo) {
-        await axios.post(`${apiBase}/git/refs`, {
-            ref: `refs/heads/${branchName}`,
-            sha: commitRes.data.sha
-        }, { headers });
-        builds[buildId].logs += `تم إنشاء الفرع الرئيسي مع commit أولي\n`;
-    } else {
-        await axios.patch(`${apiBase}/git/refs/heads/${branchName}`, {
-            sha: commitRes.data.sha,
-            force: true
-        }, { headers });
-        builds[buildId].logs += `تم تحديث الفرع الرئيسي\n`;
-    }
+    builds[buildId].logs += `تم رفع ${files.length} ملف بنجاح\n`;
 }
 
-async function createTreeItems(dirPath, basePath, treeItems, headers, apiBase, buildId) {
+async function collectFiles(dirPath, relativePath, files) {
     const items = fs.readdirSync(dirPath);
     
     for (const item of items) {
         const fullPath = path.join(dirPath, item);
-        const relativePath = basePath ? `${basePath}/${item}` : item;
+        const relPath = relativePath ? `${relativePath}/${item}` : item;
         
         if (fs.statSync(fullPath).isDirectory()) {
-            await createTreeItems(fullPath, relativePath, treeItems, headers, apiBase, buildId);
+            await collectFiles(fullPath, relPath, files);
         } else {
-            const content = fs.readFileSync(fullPath);
-            const isBinary = /\.(png|jpg|jpeg|gif|ico|webp|bmp)$/i.test(item);
-            const encoding = isBinary ? 'base64' : 'utf-8';
-            const encodedContent = isBinary ? content.toString('base64') : content.toString('utf-8');
-            
-            const blobRes = await axios.post(`${apiBase}/git/blobs`, {
-                content: encodedContent,
-                encoding: encoding
-            }, { headers });
-            
-            treeItems.push({
-                path: relativePath,
-                mode: '100644',
-                type: 'blob',
-                sha: blobRes.data.sha
+            files.push({
+                path: fullPath,
+                name: item,
+                relativePath: relPath
             });
         }
     }
