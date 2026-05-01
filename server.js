@@ -352,7 +352,7 @@ async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
         builds[buildId].logs += `الفرع الرئيسي غير موجود، سيتم إنشاؤه\n`;
     }
     
-    // جمع جميع الملفات من المشروع
+    // جمع جميع الملفات من المشروع (بما في ذلك المجلدات المخفية)
     const files = [];
     await collectFiles(projectDir, '', files);
     
@@ -381,7 +381,7 @@ async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
         });
         
         blobCount++;
-        if (blobCount % 10 === 0) {
+        if (blobCount % 10 === 0 || blobCount === files.length) {
             builds[buildId].logs += `تم إنشاء ${blobCount}/${files.length} blob...\n`;
         }
     }
@@ -424,10 +424,16 @@ async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
     builds[buildId].logs += `تم رفع ${files.length} ملف بنجاح\n`;
 }
 
+// ============================================================
+// جمع الملفات من المشروع (تشمل المجلدات المخفية)
+// ============================================================
 async function collectFiles(dirPath, relativePath, files) {
     const items = fs.readdirSync(dirPath);
     
     for (const item of items) {
+        // نتخطى .gitignore فقط، ونقبل جميع المجلدات الأخرى بما فيها .github
+        if (item === '.gitignore') continue;
+        
         const fullPath = path.join(dirPath, item);
         const relPath = relativePath ? `${relativePath}/${item}` : item;
         
