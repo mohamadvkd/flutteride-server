@@ -17,11 +17,6 @@ const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET || '';
 const GITHUB_REDIRECT_URI = process.env.GITHUB_REDIRECT_URI || 'https://flutteride-server-hu3g.onrender.com/auth/callback';
 
 // ============================================================
-// تخزين مؤقت للـ OAuth States
-// ============================================================
-const oauthStates = {};
-
-// ============================================================
 // تخزين مؤقت لحالة البناء
 // ============================================================
 const builds = {};
@@ -30,28 +25,21 @@ const builds = {};
 // OAuth - بدء عملية تسجيل الدخول
 // ============================================================
 app.get('/auth/login', (req, res) => {
-    const state = Math.random().toString(36).substring(2, 15);
-    oauthStates[state] = { created: Date.now() };
-    
-    const authUrl = `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&redirect_uri=${GITHUB_REDIRECT_URI}&scope=repo%20workflow%20user&state=${state}`;
-    
-    res.json({ auth_url: authUrl, state: state });
+    const authUrl = `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&redirect_uri=${GITHUB_REDIRECT_URI}&scope=repo%20workflow%20user`;
+    res.json({ auth_url: authUrl });
 });
 
 // ============================================================
 // OAuth - Callback بعد تسجيل الدخول
 // ============================================================
 app.get('/auth/callback', async (req, res) => {
-    const { code, state } = req.query;
+    const { code } = req.query;
     
-    if (!state || !oauthStates[state]) {
-        return res.status(400).send('Invalid state parameter');
+    if (!code) {
+        return res.status(400).send('Code is required');
     }
     
-    delete oauthStates[state];
-    
     try {
-        // استبدال الكود بـ Access Token
         const tokenRes = await axios.post('https://github.com/login/oauth/access_token', {
             client_id: GITHUB_CLIENT_ID,
             client_secret: GITHUB_CLIENT_SECRET,
@@ -64,7 +52,6 @@ app.get('/auth/callback', async (req, res) => {
         const accessToken = tokenRes.data.access_token;
         const refreshToken = tokenRes.data.refresh_token;
         
-        // جلب معلومات المستخدم
         const userRes = await axios.get('https://api.github.com/user', {
             headers: { 'Authorization': `Bearer ${accessToken}` }
         });
@@ -84,7 +71,7 @@ app.get('/auth/callback', async (req, res) => {
         
     } catch (error) {
         console.error('OAuth Error:', error.message);
-        res.status(500).send('Authentication failed');
+        res.status(500).send('Authentication failed: ' + error.message);
     }
 });
 
@@ -319,33 +306,23 @@ async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
         const branchRes = await axios.get(`${apiBase}/branches/${branchName}`, { headers });
         branchSha = branchRes.data.commit.sha;
     } catch (e) {
-        // الفرع غير موجود، سننشئه
-        const gitRefRes = await axios.get(`${apiBase}/git/refs/heads`, { headers });
-        for (const ref of gitRefRes.data) {
-            if (ref.ref === `refs/heads/${branchName}`) {
-                branchSha = ref.object.sha;
-                break;
-            }
-        }
+        // الفرع غير موجود
     }
     
     const treeItems = [];
     await createTreeItems(projectDir, '', treeItems, headers, apiBase, buildId);
     
-    // إنشاء شجرة جديدة
     const treeRes = await axios.post(`${apiBase}/git/trees`, {
         tree: treeItems,
         base_tree: branchSha
     }, { headers });
     
-    // إنشاء commit جديد
     const commitRes = await axios.post(`${apiBase}/git/commits`, {
         message: `Build from FlutterIDE - ${new Date().toISOString()}`,
         tree: treeRes.data.sha,
         parents: branchSha ? [branchSha] : []
     }, { headers });
     
-    // تحديث الفرع
     if (branchSha) {
         await axios.patch(`${apiBase}/git/refs/heads/${branchName}`, {
             sha: commitRes.data.sha,
@@ -390,7 +367,7 @@ async function createTreeItems(dirPath, basePath, treeItems, headers, apiBase, b
 }
 
 // ============================================================
-// انتظار بناء GitHub Actions
+// انتظار بناء GitHub Actions مع جلب السجلات
 // ============================================================
 async function waitForBuild(repoName, username, token, buildId) {
     const apiBase = `https://api.github.com/repos/${username}/${repoName}`;
