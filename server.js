@@ -30,7 +30,7 @@ app.get('/auth/login', (req, res) => {
 });
 
 // ============================================================
-// OAuth - Callback بعد تسجيل الدخول
+// OAuth - Callback بعد تسجيل الدخول (مع redirect مباشر)
 // ============================================================
 app.get('/auth/callback', async (req, res) => {
     const { code } = req.query;
@@ -58,20 +58,13 @@ app.get('/auth/callback', async (req, res) => {
         
         const username = userRes.data.login;
         
-        // إعادة توجيه إلى التطبيق عبر Deep Link
-        res.send(`
-            <html>
-            <body>
-            <script>
-                window.location.href = "flutteride://auth/callback?access_token=${accessToken}&refresh_token=${refreshToken}&username=${username}";
-            </script>
-            </body>
-            </html>
-        `);
+        // إعادة توجيه مباشرة إلى التطبيق (بدون HTML)
+        const redirectUrl = `flutteride://auth/callback?access_token=${accessToken}&refresh_token=${refreshToken}&username=${username}`;
+        res.redirect(302, redirectUrl);
         
     } catch (error) {
-        console.error('OAuth Error:', error.message);
-        res.status(500).send('Authentication failed: ' + error.message);
+        console.error('OAuth Error:', error.response?.data || error.message);
+        res.status(500).send('Authentication failed: ' + (error.response?.data?.error_description || error.message));
     }
 });
 
@@ -109,7 +102,7 @@ app.post('/auth/token', async (req, res) => {
         });
         
     } catch (error) {
-        console.error('Token exchange error:', error.message);
+        console.error('Token exchange error:', error.response?.data || error.message);
         res.status(500).json({ error: 'Failed to exchange code for token' });
     }
 });
@@ -305,9 +298,7 @@ async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
     try {
         const branchRes = await axios.get(`${apiBase}/branches/${branchName}`, { headers });
         branchSha = branchRes.data.commit.sha;
-    } catch (e) {
-        // الفرع غير موجود
-    }
+    } catch (e) {}
     
     const treeItems = [];
     await createTreeItems(projectDir, '', treeItems, headers, apiBase, buildId);
