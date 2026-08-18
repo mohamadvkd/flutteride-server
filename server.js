@@ -22,6 +22,13 @@ const GITHUB_REDIRECT_URI = process.env.GITHUB_REDIRECT_URI || 'https://flutteri
 const builds = {};
 
 // ============================================================
+// تنبيه مستخدمي النسخة القديمة المعتمدة على الخادم
+// ============================================================
+const SERVER_SHUTDOWN_NOTICE =
+    'تنبيه مهم: هذه النسخة من KLENCOD تعتمد على خادم وسيتم إيقافها بتاريخ 22 أغسطس 2026.\n' +
+    'يرجى الانتقال إلى النسخة الجديدة التي تتصل بـ GitHub مباشرة دون خادم وسيط.\n';
+
+// ============================================================
 // OAuth - بدء عملية تسجيل الدخول
 // ============================================================
 app.get('/auth/login', (req, res) => {
@@ -178,7 +185,7 @@ app.post('/build', upload.single('file'), async (req, res) => {
             status: 'uploading',
             downloadUrl: null,
             error: null,
-            logs: '',
+            logs: SERVER_SHUTDOWN_NOTICE,
             started: new Date(),
             username: username,
             userToken: token
@@ -240,6 +247,8 @@ async function processBuild(buildId, zipFile) {
     try {
         build.status = 'extracting';
         build.logs += 'بدء عملية البناء\n';
+        // تكرار التنبيه داخل سجل العملية لضمان ظهوره بعد بدء البناء.
+        build.logs += SERVER_SHUTDOWN_NOTICE;
         console.log(`[${buildId}] بدء عملية البناء للمستخدم ${username}`);
         
         build.logs += 'فك ضغط المشروع...\n';
