@@ -249,7 +249,7 @@ async function processBuild(buildId, zipFile) {
         build.logs += 'بدء عملية البناء\n';
         // تكرار التنبيه داخل سجل العملية لضمان ظهوره بعد بدء البناء.
         build.logs += SERVER_SHUTDOWN_NOTICE;
-        console.log(`[${buildId}] بدء عملية البناء للمستخدم ${username}`);
+        console.log(`[${buildId}] بدء عملية البناء. 📌تنبيه: سيتم ايقاف هذه النسخة من التطبيق، اليوم في تمام الساعة 12ص لذا يرجى حفظ مشاريك قبل انتهاء المدة، يمكنم تحميل النسخة الجديدة من هذا الرابط https://apkpure.com/p/com.flutteride.codweva${username}`);
         
         build.logs += 'فك ضغط المشروع...\n';
         console.log(`[${buildId}] فك ضغط الملف...`);
