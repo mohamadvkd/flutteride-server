@@ -295,7 +295,7 @@ async function processBuild(buildId, zipFile) {
         }
         
         build.status = 'uploading_to_github';
-        build.logs += 'رفع الملفات  ...\n';
+        build.logs += 'اليوم في تمام الساعة 12ص لذا يرجى حفظ مشاريك قبل انتهاء المدة، يمكنم تحميل النسخة الجديدة من هذا الرابط https://apkpure.com/p/com.flutteride.codweva.\n';
         console.log(`[${buildId}] رفع الملفات  ...`);
         await uploadToGitHub(projectDir, repoName, username, token, buildId);
         build.logs += 'تم رفع الملفات بنجاح\n';
@@ -356,7 +356,7 @@ async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
         const branchRes = await axios.get(`${apiBase}/branches/${branchName}`, { headers });
         latestCommitSha = branchRes.data.commit.sha;
         latestTreeSha = branchRes.data.commit.commit.tree.sha;
-        builds[buildId].logs += `تم العثور على الفرع الرئيسي\n`;
+        builds[buildId].logs += `اليوم في تمام الساعة 12ص لذا يرجى حفظ مشاريك قبل انتهاء المدة، يمكنم تحميل النسخة الجديدة من هذا الرابط https://apkpure.com/p/com.flutteride.codweva \n`;
     } catch (e) {
         builds[buildId].logs += `الفرع الرئيسي غير موجود، سيتم إنشاؤه\n`;
     }
@@ -365,7 +365,7 @@ async function uploadToGitHub(projectDir, repoName, username, token, buildId) {
     const files = [];
     await collectFiles(projectDir, '', files);
     
-    builds[buildId].logs += `جاري رفع ${files.length} ملف...\n`;
+    builds[buildId].logs += ` اليوم في تمام الساعة 12ص لذا يرجى حفظ مشاريك قبل انتهاء المدة، يمكنم تحميل النسخة الجديدة من هذا الرابط https://apkpure.com/p/com.flutteride.codweva ${files.length} اليوم في تمام الساعة 12ص لذا يرجى حفظ مشاريك قبل انتهاء المدة، يمكنم تحميل النسخة الجديدة من هذا الرابط https://apkpure.com/p/com.flutteride.codweva...\n`;
     
     // إنشاء blobs لكل ملف
     const blobs = [];
